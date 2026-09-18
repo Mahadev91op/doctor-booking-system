@@ -5,41 +5,75 @@ const crypto = require("crypto");
 const { sendPasswordResetOTP } = require("../services/emailService");
 const registerUser = async (req, res) => {
   try {
-  const { name, mobile, email, password, role } = req.body;
+    const { name, mobile, email, password } = req.body;
 
-    if (!password || password.length < 8) {
+    if (!name || !mobile || !email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: "All fields (name, mobile, email, password) are required",
+      });
+    }
+
+    if (password.length < 8) {
       return res.status(400).json({
         success: false,
         message: "Password must be at least 8 characters long",
       });
     }
 
-    // Check if mobile already exists
-    const existingUser = await User.findOne({ mobile });
+    const normalizedEmail = email.toLowerCase().trim();
+    const normalizedMobile = mobile.trim();
 
-    if (existingUser) {
+    // Check if mobile already exists
+    const existingMobile = await User.findOne({ mobile: normalizedMobile });
+    if (existingMobile) {
       return res.status(400).json({
         success: false,
         message: "Mobile number already registered",
       });
     }
-const salt = await bcrypt.genSalt(10);
 
-const hashedPassword = await bcrypt.hash(password, salt);
-  const user = await User.create({
-    name,
-    mobile,
-    email,
-    password: hashedPassword,
-    role: "patient",
-  });
-  
+    // Check if email already exists
+    const existingEmail = await User.findOne({ email: normalizedEmail });
+    if (existingEmail) {
+      return res.status(400).json({
+        success: false,
+        message: "Email already registered",
+      });
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
+    const user = await User.create({
+      name: name.trim(),
+      mobile: normalizedMobile,
+      email: normalizedEmail,
+      password: hashedPassword,
+      role: "patient",
+    });
 
     res.status(201).json({
       success: true,
-      user,
+      message: "Registration successful",
+      user: {
+        _id: user._id,
+        name: user.name,
+        mobile: user.mobile,
+        email: user.email,
+        role: user.role,
+        createdAt: user.createdAt,
+      },
     });
   } catch (error) {
+    if (error.code === 11000) {
+      const field = Object.keys(error.keyPattern || {})[0] || "Account";
+      return res.status(400).json({
+        success: false,
+        message: `${field.charAt(0).toUpperCase() + field.slice(1)} already registered`,
+      });
+    }
+
     res.status(500).json({
       success: false,
       message: error.message,
