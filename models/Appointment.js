@@ -99,6 +99,28 @@ const appointmentSchema = new mongoose.Schema(
       default: "",
     },
 
+    // Marketplace Dynamic Routing & Ledger
+    payoutAccountId: {
+      type: String,
+      default: "",
+    },
+
+    transferId: {
+      type: String,
+      default: "",
+    },
+
+    routingStatus: {
+      type: String,
+      enum: ["direct", "routed", "pending_transfer", "failed_transfer"],
+      default: "direct",
+    },
+
+    transferAmount: {
+      type: Number,
+      default: 0,
+    },
+
     paymentCompletedAt: {
       type: Date,
     },

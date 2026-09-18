@@ -21,7 +21,15 @@ const createOrder = async (req, res) => {
       });
     }
 
-    // Already Paid
+    // Security check: Only the booking patient can initiate payment
+    if (appointment.patientId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: "Not authorized to pay for this appointment",
+      });
+    }
+
+    // Already Paid check
     if (appointment.paymentStatus === "paid") {
       return res.status(400).json({
         success: false,
@@ -29,7 +37,16 @@ const createOrder = async (req, res) => {
       });
     }
 
-    // Amount must be greater than zero
+    // Authoritative Doctor Lookup (Never trust payout IDs from client payload)
+    const doctor = await Doctor.findById(appointment.doctorId);
+    if (!doctor) {
+      return res.status(404).json({
+        success: false,
+        message: "Associated doctor not found",
+      });
+    }
+
+    // Authoritative Amount Check
     if (!appointment.amountPaid || appointment.amountPaid <= 0) {
       return res.status(400).json({
         success: false,
@@ -37,15 +54,59 @@ const createOrder = async (req, res) => {
       });
     }
 
+    const totalAmountPaise = Math.round(appointment.amountPaid * 100);
+
+    // Build Razorpay Order Options with Marketplace Payout Routing
     const options = {
-      amount: appointment.amountPaid * 100,
+      amount: totalAmountPaise,
       currency: "INR",
       receipt: appointment.bookingReference,
+      notes: {
+        appointmentId: appointment._id.toString(),
+        bookingReference: appointment.bookingReference,
+        doctorId: doctor._id.toString(),
+        doctorName: doctor.name,
+      },
     };
 
-    const order = await razorpay.orders.create(options);
+    // If doctor has a configured linked payout account, route funds to doctor
+    if (doctor.payoutAccountId) {
+      appointment.payoutAccountId = doctor.payoutAccountId;
+      appointment.transferAmount = appointment.amountPaid;
 
-    // Save Razorpay Order
+      options.transfers = [
+        {
+          account: doctor.payoutAccountId,
+          amount: totalAmountPaise,
+          currency: "INR",
+          notes: {
+            doctorId: doctor._id.toString(),
+            appointmentId: appointment._id.toString(),
+            bookingReference: appointment.bookingReference,
+          },
+        },
+      ];
+    }
+
+    let order;
+    try {
+      order = await razorpay.orders.create(options);
+      appointment.routingStatus = doctor.payoutAccountId ? "routed" : "direct";
+    } catch (orderError) {
+      // Defensive fallback for development / test environments where Route transfers might not be enabled
+      if (options.transfers && (orderError.message.includes("account") || orderError.message.includes("transfer") || orderError.statusCode === 400)) {
+        console.warn("⚠️ Razorpay Route transfer notice:", orderError.message, "- Creating order in direct mode with routing tag for doctor:", doctor.payoutAccountId);
+        delete options.transfers;
+        options.notes.targetPayoutAccount = doctor.payoutAccountId;
+        options.notes.routePending = "true";
+        order = await razorpay.orders.create(options);
+        appointment.routingStatus = "pending_transfer";
+      } else {
+        throw orderError;
+      }
+    }
+
+    // Save Razorpay Order & routing state
     appointment.orderId = order.id;
     appointment.paymentStatus = "processing";
 
@@ -55,9 +116,14 @@ const createOrder = async (req, res) => {
       success: true,
       order,
       appointment,
+      payoutRouting: {
+        routed: !!doctor.payoutAccountId,
+        doctorPayoutAccountId: doctor.payoutAccountId || null,
+        routingStatus: appointment.routingStatus,
+      },
     });
   } catch (error) {
-    console.error(error);
+    console.error("Create Order Error:", error);
 
     res.status(500).json({
       success: false,
@@ -153,20 +219,48 @@ const verifyPayment = async (req, res) => {
     console.log("Razorpay Order:", razorpay_order_id);
 
     if (!appointment) {
-      const existingAppt = await Appointment.findOne({ orderId: razorpay_order_id });
+      const existingAppt = await Appointment.findOne({ orderId: razorpay_order_id })
+        .populate("patientId", "name email")
+        .populate("doctorId", "name specialization clinicName");
+
       if (!existingAppt) {
-        console.log("Appointment NOT FOUND");
         return res.status(404).json({
           success: false,
           message: "Appointment not found",
         });
       }
       if (existingAppt.paymentStatus === "paid") {
-        console.log("Payment already completed");
-        return res.status(400).json({
-          success: false,
-          message: "Payment already completed",
+        return res.status(200).json({
+          success: true,
+          message: "Payment already completed and verified",
+          appointment: existingAppt,
         });
+      }
+    }
+
+    // Check if post-payment routing transfer is needed
+    if (appointment.payoutAccountId && appointment.routingStatus === "pending_transfer") {
+      try {
+        const transfer = await razorpay.payments.transfer(razorpay_payment_id, {
+          transfers: [
+            {
+              account: appointment.payoutAccountId,
+              amount: Math.round(appointment.amountPaid * 100),
+              currency: "INR",
+              notes: {
+                appointmentId: appointment._id.toString(),
+                bookingReference: appointment.bookingReference,
+              },
+            },
+          ],
+        });
+        if (transfer && transfer.items && transfer.items.length > 0) {
+          appointment.transferId = transfer.items[0].id;
+          appointment.routingStatus = "routed";
+          await appointment.save();
+        }
+      } catch (transferErr) {
+        console.warn("⚠️ Post-payment Route transfer note:", transferErr.message);
       }
     }
 
