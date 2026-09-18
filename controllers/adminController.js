@@ -160,29 +160,29 @@ const activateSubscription = async (req, res) => {
 
     switch (plan) {
       case "trial":
-        expiryDate.setDate(expiryDate.getDate() + 7);
+        expiryDate.setDate(expiryDate.getDate() + 30);
         amount = 0;
         break;
 
       case "monthly":
         expiryDate.setMonth(expiryDate.getMonth() + 1);
-        amount = 999;
+        amount = 499;
         break;
 
       case "quarterly":
         expiryDate.setMonth(expiryDate.getMonth() + 3);
-        amount = 2499;
+        amount = 1299;
         break;
 
       case "yearly":
         expiryDate.setFullYear(expiryDate.getFullYear() + 1);
-        amount = 8999;
+        amount = 4499;
         break;
 
       default:
         return res.status(400).json({
           success: false,
-          message: "Invalid subscription plan",
+          message: "Invalid subscription plan. Choose trial, monthly, quarterly, or yearly.",
         });
     }
 
@@ -196,7 +196,7 @@ const activateSubscription = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      message: "Subscription activated successfully",
+      message: `Subscription (${plan}) activated successfully by Admin`,
       doctor,
     });
   } catch (error) {
@@ -206,20 +206,30 @@ const activateSubscription = async (req, res) => {
     });
   }
 };
+
 const checkExpiredSubscriptions = async (req, res) => {
   try {
     const today = new Date();
 
-    const expiredDoctors = await Doctor.find({
+    const expiredTrials = await Doctor.find({
+      subscriptionStatus: "trial",
+      $or: [
+        { trialEndDate: { $lt: today } },
+        { subscriptionExpiryDate: { $lt: today } },
+      ],
+    });
+
+    const expiredActives = await Doctor.find({
       subscriptionStatus: "active",
       subscriptionExpiryDate: {
         $lt: today,
       },
     });
 
+    const allOverdue = [...expiredTrials, ...expiredActives];
     let updated = 0;
 
-    for (const doctor of expiredDoctors) {
+    for (const doctor of allOverdue) {
       doctor.subscriptionStatus = "expired";
       await doctor.save();
       updated++;
@@ -227,7 +237,8 @@ const checkExpiredSubscriptions = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      message: `${updated} subscriptions expired`,
+      message: `${updated} subscriptions/trials expired`,
+      count: updated,
     });
   } catch (error) {
     res.status(500).json({

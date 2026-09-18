@@ -30,4 +30,43 @@ const checkDoctorSubscription = async (doctor) => {
   return doctor;
 };
 
+const checkAllDoctorsSubscription = async () => {
+  try {
+    const now = new Date();
+    const expiredDoctors = await Doctor.find({
+      $or: [
+        {
+          subscriptionStatus: "trial",
+          $or: [
+            { trialEndDate: { $lt: now } },
+            { subscriptionExpiryDate: { $lt: now } },
+          ],
+        },
+        {
+          subscriptionStatus: "active",
+          subscriptionExpiryDate: { $lt: now },
+        },
+      ],
+    });
+
+    let updatedCount = 0;
+    for (const doc of expiredDoctors) {
+      doc.subscriptionStatus = "expired";
+      await doc.save();
+      updatedCount++;
+    }
+
+    if (updatedCount > 0) {
+      console.log(`⏰ Automated Check: Expired ${updatedCount} overdue doctor subscriptions/trials.`);
+    }
+    return updatedCount;
+  } catch (err) {
+    console.error("❌ Error in checkAllDoctorsSubscription:", err.message);
+    return 0;
+  }
+};
+
+checkDoctorSubscription.checkAllDoctorsSubscription = checkAllDoctorsSubscription;
+
 module.exports = checkDoctorSubscription;
+

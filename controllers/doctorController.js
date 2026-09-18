@@ -119,12 +119,7 @@ const getDoctorById = async (req, res) => {
   console.log("GET DOCTOR BY ID API HIT");
   console.log("Doctor ID:", req.params.id);
   try {
-    const doctor = await Doctor.findOne({
-      _id: req.params.id,
-      subscriptionStatus: {
-        $in: ["trial", "active"],
-      },
-    });
+    const doctor = await Doctor.findById(req.params.id);
 
     if (!doctor) {
       return res.status(404).json({
@@ -132,6 +127,8 @@ const getDoctorById = async (req, res) => {
         message: "Doctor not found",
       });
     }
+
+    await checkDoctorSubscription(doctor);
 
     res.status(200).json({
       success: true,
@@ -186,6 +183,16 @@ const getPremiumSlots = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: "Doctor not found",
+      });
+    }
+
+    await checkDoctorSubscription(doctor);
+
+    if (!["active", "trial", "adminApproved"].includes(doctor.subscriptionStatus)) {
+      return res.status(400).json({
+        success: false,
+        message: "Doctor is currently unavailable due to inactive subscription.",
+        slots: [],
       });
     }
 
@@ -307,6 +314,16 @@ const getHomeVisitSlots = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: "Doctor not found",
+      });
+    }
+
+    await checkDoctorSubscription(doctor);
+
+    if (!["active", "trial", "adminApproved"].includes(doctor.subscriptionStatus)) {
+      return res.status(400).json({
+        success: false,
+        message: "Doctor is currently unavailable due to inactive subscription.",
+        availableSlots: [],
       });
     }
 

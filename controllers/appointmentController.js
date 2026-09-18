@@ -20,13 +20,12 @@ const createNormalAppointment = async (req, res) => {
         message: "Doctor not found",
       });
     }
-    if (
-      doctor.subscriptionStatus === "expired" ||
-      doctor.subscriptionStatus === "suspended"
-    ) {
+    await checkDoctorSubscription(doctor);
+
+    if (!["active", "trial", "adminApproved"].includes(doctor.subscriptionStatus)) {
       return res.status(400).json({
         success: false,
-        message: "Doctor is currently unavailable.",
+        message: "Doctor is currently unavailable due to inactive subscription.",
       });
     }
 
@@ -311,6 +310,8 @@ const createPremiumAppointment = async (req, res) => {
     }
 
     // Subscription Check
+    await checkDoctorSubscription(doctor);
+
     if (
       !["active", "trial", "adminApproved"].includes(
         doctor.subscriptionStatus
@@ -318,7 +319,7 @@ const createPremiumAppointment = async (req, res) => {
     ) {
       return res.status(400).json({
         success: false,
-        message: "Doctor is currently unavailable",
+        message: "Doctor is currently unavailable due to inactive subscription.",
       });
     }
 
