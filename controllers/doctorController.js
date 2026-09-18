@@ -20,6 +20,7 @@ const registerDoctor = async (req, res) => {
       homeVisitFee,
       homeVisitAvailable,
       premiumBookingEnabled,
+      payoutAccountId,
     } = req.body;
 
     // Check if doctor profile already exists
@@ -31,6 +32,10 @@ const registerDoctor = async (req, res) => {
         message: "Doctor profile already exists",
       });
     }
+
+    const startDate = new Date();
+    const expiryDate = new Date();
+    expiryDate.setDate(expiryDate.getDate() + 30);
 
     // Create Doctor Profile
     const doctor = await Doctor.create({
@@ -46,11 +51,21 @@ const registerDoctor = async (req, res) => {
       homeVisitFee,
       homeVisitAvailable,
       premiumBookingEnabled,
+      payoutAccountId: payoutAccountId ? payoutAccountId.trim() : "",
+      payoutAccountStatus: payoutAccountId ? "active" : "unlinked",
+      trialStartDate: startDate,
+      trialEndDate: expiryDate,
+      subscriptionStatus: "trial",
+      subscriptionPlan: "trial",
+      subscriptionStartDate: startDate,
+      subscriptionExpiryDate: expiryDate,
+      subscriptionAmount: 0,
+      billingCycle: "monthly",
     });
 
     res.status(201).json({
       success: true,
-      message: "Doctor profile created successfully",
+      message: "Doctor profile created successfully with 30-day free trial",
       doctor,
     });
   } catch (error) {
@@ -995,6 +1010,40 @@ const searchDoctors = async (req, res) => {
     });
   }
 };
+
+const updatePayoutAccount = async (req, res) => {
+  try {
+    const { payoutAccountId } = req.body;
+
+    const doctor = await Doctor.findOne({
+      userId: req.user._id,
+    });
+
+    if (!doctor) {
+      return res.status(404).json({
+        success: false,
+        message: "Doctor profile not found",
+      });
+    }
+
+    doctor.payoutAccountId = payoutAccountId ? payoutAccountId.trim() : "";
+    doctor.payoutAccountStatus = doctor.payoutAccountId ? "active" : "unlinked";
+    await doctor.save();
+
+    res.status(200).json({
+      success: true,
+      message: "Payout account updated successfully",
+      payoutAccountId: doctor.payoutAccountId,
+      payoutAccountStatus: doctor.payoutAccountStatus,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
 module.exports = {
   registerDoctor,
   getAllDoctors,
@@ -1011,4 +1060,5 @@ module.exports = {
   searchDoctors,
   getMyAppointments,
   getHomeVisitSlots,
+  updatePayoutAccount,
 };

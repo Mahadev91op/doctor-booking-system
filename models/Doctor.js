@@ -117,16 +117,43 @@ const doctorSchema = new mongoose.Schema(
       default: 20,
     },
 
+    // Payout Account Identification (Marketplace Dynamic Routing)
+    payoutAccountId: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+
+    payoutAccountStatus: {
+      type: String,
+      enum: ["unlinked", "pending", "active", "suspended"],
+      default: "unlinked",
+    },
+
+    // 30-Day Free Trial & SaaS Subscription Lifecycle
+    trialStartDate: {
+      type: Date,
+    },
+
+    trialEndDate: {
+      type: Date,
+    },
+
+    billingCycle: {
+      type: String,
+      default: "monthly",
+    },
+
     subscriptionStatus: {
       type: String,
-      enum: ["inactive", "trial", "active", "expired", "suspended"],
-      default: "inactive",
+      enum: ["inactive", "trial", "active", "past_due", "expired", "suspended"],
+      default: "trial",
     },
 
     subscriptionPlan: {
       type: String,
       enum: ["none", "trial", "monthly", "quarterly", "yearly"],
-      default: "none",
+      default: "trial",
     },
 
     subscriptionStartDate: {

@@ -469,6 +469,7 @@ const createDoctorByAdmin = async (req, res) => {
       consultationFee,
       premiumFee,
       homeVisitFee,
+      payoutAccountId,
     } = req.body;
 
     // Check existing email
@@ -503,11 +504,10 @@ const createDoctorByAdmin = async (req, res) => {
       role: "doctor",
     });
 
-    // Trial Dates
+    // 30-Day Free Trial Dates
     const startDate = new Date();
-
     const expiryDate = new Date();
-    expiryDate.setDate(expiryDate.getDate() + 7);
+    expiryDate.setDate(expiryDate.getDate() + 30);
 
     // Create Doctor Profile
     const doctor = await Doctor.create({
@@ -522,17 +522,24 @@ const createDoctorByAdmin = async (req, res) => {
       premiumFee,
       homeVisitFee,
 
-      // Free Trial
+      // Payout Account
+      payoutAccountId: payoutAccountId ? payoutAccountId.trim() : "",
+      payoutAccountStatus: payoutAccountId ? "active" : "unlinked",
+
+      // 30-Day Free Trial
+      trialStartDate: startDate,
+      trialEndDate: expiryDate,
       subscriptionStatus: "trial",
       subscriptionPlan: "trial",
       subscriptionStartDate: startDate,
       subscriptionExpiryDate: expiryDate,
       subscriptionAmount: 0,
+      billingCycle: "monthly",
     });
 
     res.status(201).json({
       success: true,
-      message: "Doctor created successfully. 7-day trial activated.",
+      message: "Doctor created successfully. 30-day free trial activated.",
       doctor,
     });
   } catch (error) {

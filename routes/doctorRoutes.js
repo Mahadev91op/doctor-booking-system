@@ -17,6 +17,7 @@ const {
     updateAvailability,
     searchDoctors,
     getMyAppointments,
+    updatePayoutAccount,
 } = require("../controllers/doctorController");
 
 
@@ -35,6 +36,7 @@ router.get("/analytics", protect, doctorOnly, getDoctorAnalytics);
 router.get("/earnings", protect, doctorOnly, getDoctorEarnings);
 router.get("/availability", protect, doctorOnly, getAvailability);
 router.put("/availability", protect, doctorOnly, updateAvailability);
+router.put("/payout-account", protect, doctorOnly, updatePayoutAccount);
 router.get("/", getAllDoctors);
 
 // Dynamic routes
