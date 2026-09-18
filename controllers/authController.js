@@ -22,7 +22,23 @@ const registerUser = async (req, res) => {
     }
 
     const normalizedEmail = email.toLowerCase().trim();
-    const normalizedMobile = mobile.trim();
+    const normalizedMobile = mobile.toString().trim();
+
+    // Validate 10-digit mobile number
+    if (!/^\d{10}$/.test(normalizedMobile)) {
+      return res.status(400).json({
+        success: false,
+        message: "Please provide a valid 10-digit mobile number",
+      });
+    }
+
+    // Validate email format
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      return res.status(400).json({
+        success: false,
+        message: "Please provide a valid email address",
+      });
+    }
 
     // Check if mobile already exists
     const existingMobile = await User.findOne({ mobile: normalizedMobile });
@@ -53,9 +69,12 @@ const registerUser = async (req, res) => {
       role: "patient",
     });
 
+    const token = generateToken(user._id);
+
     res.status(201).json({
       success: true,
       message: "Registration successful",
+      token,
       user: {
         _id: user._id,
         name: user.name,
