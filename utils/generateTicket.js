@@ -54,7 +54,7 @@ const generateTicket = (appointment, res) => {
 
   doc.moveDown();
 
-  doc.text(`Amount : ₹${appointment.amountPaid}`);
+  doc.text(`Amount : Rs. ${appointment.amountPaid}`);
 
   doc.moveDown();
 

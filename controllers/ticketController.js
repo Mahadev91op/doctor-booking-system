@@ -1,6 +1,9 @@
 const Appointment = require("../models/Appointment");
+const User = require("../models/User");
+const Doctor = require("../models/Doctor");
 const PDFDocument = require("pdfkit");
 const QRCode = require("qrcode");
+
 const getTicket = async (req, res) => {
   try {
     const appointment = await Appointment.findById(req.params.id)
@@ -9,12 +12,6 @@ const getTicket = async (req, res) => {
         "doctorId",
         "name specialization clinicName clinicAddress consultationFee premiumFee homeVisitFee",
       );
-      if (appointment.paymentStatus !== "paid") {
-        return res.status(400).json({
-          success: false,
-          message: "Payment not completed. Ticket unavailable.",
-        });
-      }
 
     if (!appointment) {
       return res.status(404).json({
@@ -23,32 +20,16 @@ const getTicket = async (req, res) => {
       });
     }
 
+    if (appointment.paymentStatus !== "paid" && appointment.status !== "confirmed") {
+      return res.status(400).json({
+        success: false,
+        message: "Payment not completed. Ticket unavailable.",
+      });
+    }
+
     res.status(200).json({
       success: true,
-
-      ticket: {
-        bookingReference: appointment.bookingReference,
-
-        patient: appointment.patientId,
-
-        doctor: appointment.doctorId,
-
-        appointmentType: appointment.appointmentType,
-
-        tokenNumber: appointment.tokenNumber,
-
-        slotDate: appointment.slotDate,
-
-        slotTime: appointment.slotTime,
-
-        paymentStatus: appointment.paymentStatus,
-
-        amountPaid: appointment.amountPaid,
-
-        paymentId: appointment.paymentId,
-
-        status: appointment.status,
-      },
+      appointment,
     });
   } catch (error) {
     res.status(500).json({
@@ -57,17 +38,15 @@ const getTicket = async (req, res) => {
     });
   }
 };
+
 const downloadTicket = async (req, res) => {
   try {
-  const appointment = await Appointment.findById(req.params.id)
-    .populate("patientId", "name mobile email")
-    .populate(
-      "doctorId",
-      "name specialization clinicName clinicAddress consultationFee premiumFee homeVisitFee",
-    );
-
-  console.log("DOWNLOAD API HIT");
-  console.log("Payment Status:", appointment?.paymentStatus);
+    const appointment = await Appointment.findById(req.params.id)
+      .populate("patientId", "name mobile email")
+      .populate(
+        "doctorId",
+        "name specialization clinicName clinicAddress consultationFee premiumFee homeVisitFee",
+      );
 
     if (!appointment) {
       return res.status(404).json({
@@ -76,10 +55,10 @@ const downloadTicket = async (req, res) => {
       });
     }
 
-    if (appointment.paymentStatus !== "paid") {
+    if (appointment.paymentStatus !== "paid" && appointment.status !== "confirmed") {
       return res.status(400).json({
         success: false,
-        message: "Payment not completed.",
+        message: "Payment not completed. Ticket unavailable.",
       });
     }
 
@@ -88,153 +67,117 @@ const downloadTicket = async (req, res) => {
       margin: 50,
     });
 
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename=Ticket-${appointment.bookingReference}.pdf`,
-    );
-
+    const filename = `Ticket-${appointment.bookingReference || appointment._id}.pdf`;
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
     res.setHeader("Content-Type", "application/pdf");
 
     doc.pipe(res);
 
     // ===== Header =====
-
     doc.fontSize(28).fillColor("#2563EB").text("SehatRaj", {
       align: "center",
     });
 
     doc
-      .fontSize(13)
+      .fontSize(12)
       .fillColor("gray")
-      .text("by Qurenix Technologies Pvt. Ltd.", {
+      .text("Healthcare & Doctor Consultation Services", {
         align: "center",
       });
 
-    doc.moveDown();
+    doc.moveDown(0.5);
 
-    doc.fontSize(18).fillColor("green").text("APPOINTMENT CONFIRMED", {
+    doc.fontSize(16).fillColor("green").text("APPOINTMENT CONFIRMED", {
       align: "center",
     });
 
-    doc.moveDown(2);
+    doc.moveDown(1.5);
 
     // ===== Ticket Details =====
+    doc.fontSize(12).fillColor("black");
 
-    doc.fontSize(14).fillColor("black");
-
-    doc.text(`Booking Reference : ${appointment.bookingReference}`);
-    doc.text(`Patient : ${appointment.patientId.name}`);
-    doc.text(`Doctor : ${appointment.doctorId.name}`);
-    doc.text(`Specialization : ${appointment.doctorId.specialization}`);
-    doc.text(`Clinic : ${appointment.doctorId.clinicName}`);
-    doc.text(`Address : ${appointment.doctorId.clinicAddress}`);
+    doc.text(`Booking Reference : ${appointment.bookingReference || appointment._id}`);
+    doc.text(`Patient Name      : ${appointment.patientId?.name || "Patient"}`);
+    doc.text(`Patient Contact   : ${appointment.patientId?.mobile || appointment.patientId?.email || "N/A"}`);
+    doc.text(`Doctor Name       : ${appointment.doctorId?.name || "Doctor"}`);
+    doc.text(`Specialization    : ${appointment.doctorId?.specialization || "General"}`);
+    doc.text(`Clinic            : ${appointment.doctorId?.clinicName || "Clinic"}`);
+    doc.text(`Clinic Address    : ${appointment.doctorId?.clinicAddress || "N/A"}`);
     doc.text(
-      `Appointment Type : ${
+      `Appointment Type  : ${
         appointment.appointmentType === "normal"
           ? "Normal Consultation"
           : appointment.appointmentType === "premium"
-            ? "Premium Consultation"
-            : "Home Visit"
-      }`,
+          ? "Premium Consultation"
+          : "Home Visit"
+      }`
     );
 
     if (appointment.appointmentType === "normal") {
-      doc.text(`Token Number : ${appointment.tokenNumber}`);
-
+      doc.text(`Token Number      : #${appointment.tokenNumber || 1}`);
       doc.text(
-        `Appointment Date : ${new Date(
-          appointment.appointmentDate,
-        ).toLocaleDateString()}`,
+        `Appointment Date  : ${new Date(
+          appointment.appointmentDate || appointment.createdAt
+        ).toLocaleDateString()}`
       );
     } else {
       doc.text(
-        `Appointment Date : ${new Date(
-          appointment.slotDate,
-        ).toLocaleDateString()}`,
+        `Appointment Date  : ${new Date(
+          appointment.slotDate || appointment.appointmentDate
+        ).toLocaleDateString()}`
       );
-
-      doc.text(`Appointment Time : ${appointment.slotTime}`);
+      doc.text(`Appointment Time  : ${appointment.slotTime || "Scheduled"}`);
     }
 
-    doc.text(`Amount Paid : ₹${appointment.amountPaid}`);
-    doc.text(`Payment Status : ${appointment.paymentStatus}`);
-    doc.text(`Appointment Status : ${appointment.status}`);
+    doc.text(`Amount Paid       : Rs. ${appointment.amountPaid || 0}`);
+    doc.text(`Payment Status    : ${appointment.paymentStatus || "paid"}`);
+    doc.text(`Booking Status    : ${appointment.status || "confirmed"}`);
 
     doc.moveDown(2);
 
-    // ===== QR Code =====
-
-    // ===== QR Code =====
-
-   const fs = require("fs");
-   const path = require("path");
-
-   const logoPath = path.join(__dirname, "../uploads/logo.png");
-
-   if (fs.existsSync(logoPath)) {
-     doc.image(logoPath, {
-       fit: [120, 120],
-       align: "center",
-     });
-   }
     // ===== Patient Instructions =====
-
-    doc.fontSize(14).fillColor("#2563EB").text("Patient Instructions", {
+    doc.fontSize(13).fillColor("#2563EB").text("Patient Instructions", {
       underline: true,
     });
 
-    doc.moveDown();
+    doc.moveDown(0.5);
 
-    doc
-      .fontSize(10)
-      .fillColor("black")
-      .text("• Please arrive at least 15 minutes before your appointment.");
+    doc.fontSize(10).fillColor("black");
+    doc.text("- Please arrive at least 15 minutes before your scheduled appointment time.");
+    doc.text("- Present this printed ticket or digital copy at the clinic reception.");
+    doc.text("- Carry your previous medical prescriptions, lab reports, and doctor notes.");
+    doc.text("- Follow all clinic and doctor guidelines during your consultation.");
 
-    doc.text("• Carry this appointment ticket with you.");
+    doc.moveDown(2);
 
-    doc.text("• Bring previous prescriptions and medical reports.");
-
-    doc.text("• Follow the doctor's instructions during your visit.");
-
-    doc.moveDown();
-
-    doc.fontSize(12).fillColor("#2563EB").text("Need Help?", {
+    doc.fontSize(11).fillColor("#2563EB").text("Need Help / Support?", {
       align: "center",
     });
 
-    doc.fontSize(10).fillColor("gray").text("📞 +91-9149852051", {
-      align: "center",
-    });
+    doc.fontSize(9).fillColor("gray");
+    doc.text("Helpline : +91-9149852051", { align: "center" });
+    doc.text("Email    : support@sehatraj.com", { align: "center" });
+    doc.text("Website  : www.sehatraj.com", { align: "center" });
 
-    doc.text("📧 ka8932007@gmail.com", {
-      align: "center",
-    });
+    doc.moveDown(1);
+    doc.fontSize(9).fillColor("gray").text(
+      "Powered by SehatRaj Healthcare Platform",
+      { align: "center" }
+    );
 
-    doc.text("🌐 www.sehatraj.com", {
-      align: "center",
-    });
-
-    doc.moveDown();
-
-    doc
-      .fontSize(9)
-      .fillColor("gray")
-      .text(
-        "Powered by SehatRaj\nA Product of Qurenix Technologies Pvt. Ltd.",
-        {
-          align: "center",
-        },
-      );
-
-    // VERY IMPORTANT
+    // End stream
     doc.end();
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    console.error("Download Ticket Error:", error);
+    if (!res.headersSent) {
+      res.status(500).json({
+        success: false,
+        message: error.message,
+      });
+    }
   }
 };
+
 module.exports = {
   getTicket,
   downloadTicket,

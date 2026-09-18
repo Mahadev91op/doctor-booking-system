@@ -7,6 +7,8 @@ const getPatientDashboard = async (req, res) => {
 
     const appointments = await Appointment.find({
       patientId,
+      paymentStatus: "paid",
+      status: { $nin: ["pending_payment", "failed"] },
     })
       .populate(
         "doctorId",
@@ -18,7 +20,7 @@ const getPatientDashboard = async (req, res) => {
 
     // Upcoming Appointments
     const upcoming = appointments.filter((a) =>
-      ["pending_payment", "confirmed", "booked", "rescheduled"].includes(
+      ["confirmed", "booked", "rescheduled"].includes(
         a.status,
       ),
     );
@@ -107,11 +109,13 @@ const getMyAppointments = async (req, res) => {
   try {
     const appointments = await Appointment.find({
       patientId: req.user._id,
+      paymentStatus: "paid",
+      status: { $nin: ["pending_payment", "failed"] },
     })
       .populate({
         path: "doctorId",
         select:
-          "name specialization clinicName consultationFee premiumFee homeVisitFee",
+          "name specialization clinicName clinicAddress consultationFee premiumFee homeVisitFee",
       })
       .sort({
         createdAt: -1,
