@@ -189,11 +189,9 @@ const getPremiumSlots = async (req, res) => {
       });
     }
 
-    const slots = [];
-
-    const start = doctor.premiumStartTime;
-    const end = doctor.premiumEndTime;
-    const duration = doctor.premiumSlotDuration;
+    const start = doctor.premiumStartTime || doctor.clinicStartTime || "09:00";
+    const end = doctor.premiumEndTime || doctor.clinicEndTime || "18:00";
+    const duration = doctor.premiumSlotDuration || doctor.slotDuration || 20;
 
     if (!duration || duration <= 0) {
       return res.status(400).json({
@@ -203,23 +201,23 @@ const getPremiumSlots = async (req, res) => {
     }
 
     let [startHour, startMinute] = start.split(":").map(Number);
-
     let [endHour, endMinute] = end.split(":").map(Number);
 
     let currentMinutes = startHour * 60 + startMinute;
-
     const endMinutes = endHour * 60 + endMinute;
 
+    const lunchStartStr = doctor.lunchStart || "13:00";
+    const lunchEndStr = doctor.lunchEnd || "14:00";
+    const lunchStart =
+      Number(lunchStartStr.split(":")[0]) * 60 +
+      Number(lunchStartStr.split(":")[1]);
+    const lunchEnd =
+      Number(lunchEndStr.split(":")[0]) * 60 +
+      Number(lunchEndStr.split(":")[1]);
+
+    const slots = [];
     while (currentMinutes < endMinutes) {
       const slotMinutes = currentMinutes;
-
-      const lunchStart =
-        Number(doctor.lunchStart.split(":")[0]) * 60 +
-        Number(doctor.lunchStart.split(":")[1]);
-
-      const lunchEnd =
-        Number(doctor.lunchEnd.split(":")[0]) * 60 +
-        Number(doctor.lunchEnd.split(":")[1]);
 
       // Skip lunch slots
       if (slotMinutes >= lunchStart && slotMinutes < lunchEnd) {
@@ -236,38 +234,53 @@ const getPremiumSlots = async (req, res) => {
       )}`;
 
       slots.push(slot);
-
       currentMinutes += duration;
     }
+
     // Get booking date from query
     const selectedDate = req.query.date;
-    const bookingDate = new Date(selectedDate);
+    if (!selectedDate) {
+      return res.status(200).json({
+        success: true,
+        totalSlots: slots.length,
+        bookedSlots: [],
+        availableSlots: slots,
+      });
+    }
 
+    const bookingDate = new Date(selectedDate);
     const dayName = bookingDate.toLocaleDateString("en-US", {
       weekday: "long",
     });
 
-    if (!doctor.premiumWorkingDays.includes(dayName)) {
-      return res.status(400).json({
-        success: false,
+    const workingDays =
+      doctor.premiumWorkingDays && doctor.premiumWorkingDays.length > 0
+        ? doctor.premiumWorkingDays
+        : doctor.workingDays && doctor.workingDays.length > 0
+        ? doctor.workingDays
+        : ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+    if (!workingDays.includes(dayName)) {
+      return res.status(200).json({
+        success: true,
         message: `Doctor does not provide Premium Consultation on ${dayName}`,
+        totalSlots: 0,
+        bookedSlots: [],
+        availableSlots: [],
       });
     }
 
     let bookedSlots = [];
+    const appointments = await Appointment.find({
+      doctorId: doctor._id,
+      appointmentType: "premium",
+      slotDate: new Date(selectedDate),
+      status: {
+        $in: ["confirmed", "checked", "completed", "pending_payment"],
+      },
+    });
 
-    if (selectedDate) {
-      const appointments = await Appointment.find({
-        doctorId: doctor._id,
-        appointmentType: "premium",
-        slotDate: new Date(selectedDate),
-        status: {
-          $in: ["confirmed", "checked", "completed", "pending_payment"],
-        },
-      });
-
-      bookedSlots = appointments.map((a) => a.slotTime);
-    }
+    bookedSlots = appointments.map((a) => a.slotTime);
 
     // Remove booked slots
     const availableSlots = slots.filter((slot) => !bookedSlots.includes(slot));

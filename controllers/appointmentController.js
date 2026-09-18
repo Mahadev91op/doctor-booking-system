@@ -120,10 +120,10 @@ const createPremiumAppointment = async (req, res) => {
         message: "Premium booking is disabled for this doctor",
       });
     }
-    if (
-      slotTime < doctor.premiumStartTime ||
-      slotTime >= doctor.premiumEndTime
-    ) {
+    const start = doctor.premiumStartTime || doctor.clinicStartTime || "09:00";
+    const end = doctor.premiumEndTime || doctor.clinicEndTime || "18:00";
+
+    if (slotTime < start || slotTime >= end) {
       return res.status(400).json({
         success: false,
         message: "Invalid slot selected",
@@ -138,23 +138,32 @@ const createPremiumAppointment = async (req, res) => {
       weekday: "long",
     });
 
-    if (!doctor.workingDays.includes(dayName)) {
+    const workingDays =
+      doctor.premiumWorkingDays && doctor.premiumWorkingDays.length > 0
+        ? doctor.premiumWorkingDays
+        : doctor.workingDays && doctor.workingDays.length > 0
+        ? doctor.workingDays
+        : ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+    if (!workingDays.includes(dayName)) {
       return res.status(400).json({
         success: false,
         message: `Doctor does not work on ${dayName}`,
       });
     }
     // Lunch Break Validation
+    const lunchStartStr = doctor.lunchStart || "13:00";
+    const lunchEndStr = doctor.lunchEnd || "14:00";
     const slotMinutes =
       Number(slotTime.split(":")[0]) * 60 + Number(slotTime.split(":")[1]);
 
     const lunchStartMinutes =
-      Number(doctor.lunchStart.split(":")[0]) * 60 +
-      Number(doctor.lunchStart.split(":")[1]);
+      Number(lunchStartStr.split(":")[0]) * 60 +
+      Number(lunchStartStr.split(":")[1]);
 
     const lunchEndMinutes =
-      Number(doctor.lunchEnd.split(":")[0]) * 60 +
-      Number(doctor.lunchEnd.split(":")[1]);
+      Number(lunchEndStr.split(":")[0]) * 60 +
+      Number(lunchEndStr.split(":")[1]);
 
     if (slotMinutes >= lunchStartMinutes && slotMinutes < lunchEndMinutes) {
       return res.status(400).json({
