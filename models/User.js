@@ -45,6 +45,22 @@ const userSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
+    toJSON: {
+      transform: function (doc, ret) {
+        delete ret.password;
+        delete ret.resetOTP;
+        delete ret.resetOTPExpire;
+        return ret;
+      },
+    },
+    toObject: {
+      transform: function (doc, ret) {
+        delete ret.password;
+        delete ret.resetOTP;
+        delete ret.resetOTPExpire;
+        return ret;
+      },
+    },
   },
 );
 

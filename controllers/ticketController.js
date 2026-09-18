@@ -4,6 +4,28 @@ const Doctor = require("../models/Doctor");
 const PDFDocument = require("pdfkit");
 const QRCode = require("qrcode");
 
+const checkTicketAuthorization = async (appointment, user) => {
+  if (!user) return false;
+  if (user.role === "admin") return true;
+
+  const patientIdStr = appointment.patientId?._id
+    ? appointment.patientId._id.toString()
+    : appointment.patientId?.toString();
+  if (patientIdStr && patientIdStr === user._id.toString()) return true;
+
+  if (user.role === "doctor") {
+    const doctorProfile = await Doctor.findOne({ userId: user._id });
+    if (doctorProfile) {
+      const doctorIdStr = appointment.doctorId?._id
+        ? appointment.doctorId._id.toString()
+        : appointment.doctorId?.toString();
+      if (doctorIdStr && doctorIdStr === doctorProfile._id.toString()) return true;
+    }
+  }
+
+  return false;
+};
+
 const getTicket = async (req, res) => {
   try {
     const appointment = await Appointment.findById(req.params.id)
@@ -17,6 +39,14 @@ const getTicket = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: "Ticket not found",
+      });
+    }
+
+    const isAuthorized = await checkTicketAuthorization(appointment, req.user);
+    if (!isAuthorized) {
+      return res.status(403).json({
+        success: false,
+        message: "Unauthorized: You do not have permission to access this ticket",
       });
     }
 
@@ -52,6 +82,14 @@ const downloadTicket = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: "Appointment not found",
+      });
+    }
+
+    const isAuthorized = await checkTicketAuthorization(appointment, req.user);
+    if (!isAuthorized) {
+      return res.status(403).json({
+        success: false,
+        message: "Unauthorized: You do not have permission to download this ticket",
       });
     }
 

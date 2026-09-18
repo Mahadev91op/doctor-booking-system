@@ -469,6 +469,14 @@ const cancelAppointment = async (req, res) => {
       });
     }
 
+    // Only booking patient can cancel (Authorization check first)
+    if (appointment.patientId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: "Not authorized to cancel this appointment",
+      });
+    }
+
     // Chronological cancellation check
     const appointmentDate = new Date(appointment.slotDate || appointment.appointmentDate);
     if (appointment.slotTime) {
@@ -501,14 +509,6 @@ const cancelAppointment = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: "Appointment already cancelled",
-      });
-    }
-
-    // Only booking patient can cancel
-    if (appointment.patientId.toString() !== req.user._id.toString()) {
-      return res.status(403).json({
-        success: false,
-        message: "Not authorized",
       });
     }
 
@@ -618,6 +618,26 @@ const getAppointmentTicket = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: "Appointment not found",
+      });
+    }
+
+    // IDOR Protection: Patient can only view their own ticket; Doctor can view their appointments; Admin can view all
+    const patientIdStr = appointment.patientId?._id ? appointment.patientId._id.toString() : appointment.patientId?.toString();
+    const isPatient = patientIdStr && patientIdStr === req.user._id.toString();
+    let isDoctor = false;
+    if (req.user.role === "doctor") {
+      const doctorProfile = await Doctor.findOne({ userId: req.user._id });
+      if (doctorProfile) {
+        const doctorIdStr = appointment.doctorId?._id ? appointment.doctorId._id.toString() : appointment.doctorId?.toString();
+        isDoctor = doctorIdStr && doctorIdStr === doctorProfile._id.toString();
+      }
+    }
+    const isAdmin = req.user.role === "admin";
+
+    if (!isPatient && !isDoctor && !isAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: "Unauthorized: You do not have permission to view this ticket",
       });
     }
 
