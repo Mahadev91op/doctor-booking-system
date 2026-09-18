@@ -84,9 +84,23 @@ const registerUser = async (req, res) => {
 
 const loginUser = async (req, res) => {
   try {
-const { mobile, password } = req.body;
+    const { mobile, email, identifier, password } = req.body;
+    const loginId = (mobile || email || identifier || "").toString().trim();
 
-const user = await User.findOne({ mobile });
+    if (!loginId || !password) {
+      return res.status(400).json({
+        success: false,
+        message: "Mobile/Email and password are required",
+      });
+    }
+
+    // Support login via either mobile number or email address
+    const user = await User.findOne({
+      $or: [
+        { mobile: loginId },
+        { email: loginId.toLowerCase() },
+      ],
+    });
 
     if (!user) {
       return res.status(400).json({

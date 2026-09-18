@@ -14,18 +14,19 @@ app.use(helmet());
 app.use(compression());
 
 // Global Rate Limiting
+const isProd = process.env.NODE_ENV === "production";
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per window
+  max: isProd ? 100 : 1000, // Limit each IP per window (relaxed in development)
   standardHeaders: true,
   legacyHeaders: false,
 });
 app.use(globalLimiter);
 
-// Stricter Rate Limiting for Auth Routes
+// Rate Limiting for Auth Routes
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10, // Limit each IP to 10 requests per window for auth routes
+  max: isProd ? 15 : 500, // Limit each IP for auth routes (relaxed in development)
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: "Too many attempts from this IP, please try again after 15 minutes" }
