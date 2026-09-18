@@ -67,6 +67,43 @@ const startReminderService = () => {
       console.error("❌ Reminder Service Error:", error);
     }
   });
+
+  // Check doctor trial and subscription expirations every hour
+  cron.schedule("0 * * * *", async () => {
+    try {
+      console.log("⏰ Checking doctor trial and subscription expirations...");
+      const now = new Date();
+
+      // Expire trials past trialEndDate or subscriptionExpiryDate
+      const expiredTrials = await Doctor.find({
+        subscriptionStatus: "trial",
+        $or: [
+          { trialEndDate: { $lt: now } },
+          { subscriptionExpiryDate: { $lt: now } },
+        ],
+      });
+
+      for (const doctor of expiredTrials) {
+        doctor.subscriptionStatus = "expired";
+        await doctor.save();
+        console.log(`ℹ️ Doctor ${doctor.name} 30-day trial expired`);
+      }
+
+      // Expire active subscriptions past expiry date
+      const expiredSubs = await Doctor.find({
+        subscriptionStatus: "active",
+        subscriptionExpiryDate: { $lt: now },
+      });
+
+      for (const doctor of expiredSubs) {
+        doctor.subscriptionStatus = "expired";
+        await doctor.save();
+        console.log(`ℹ️ Doctor ${doctor.name} subscription expired`);
+      }
+    } catch (err) {
+      console.error("❌ Subscription Expiry Cron Error:", err);
+    }
+  });
 };
 
 module.exports = {
