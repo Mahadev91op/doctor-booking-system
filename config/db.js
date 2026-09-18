@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const seedAdmin = require("../utils/seedAdmin");
 
 const connectDB = async () => {
   try {
@@ -6,6 +7,7 @@ const connectDB = async () => {
     await mongoose.connect(mongoUri);
 
     console.log("MongoDB Connected");
+    await seedAdmin();
   } catch (error) {
     console.error("Database Connection Error:", error.message);
   }
