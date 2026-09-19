@@ -82,10 +82,13 @@ async function testFullBookingFlow() {
     console.log("2. TESTING PREMIUM APPOINTMENT & SLOTS FLOW");
     console.log("==========================================");
 
-    // Step A: Fetch Premium Slots
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const dateStr = tomorrow.toISOString().split("T")[0];
+    // Step A: Fetch Premium Slots (ensure working day, skipping Sunday)
+    let testDate = new Date();
+    testDate.setDate(testDate.getDate() + 1);
+    if (testDate.getDay() === 0) {
+      testDate.setDate(testDate.getDate() + 1); // Skip Sunday to Monday
+    }
+    const dateStr = testDate.toISOString().split("T")[0];
 
     const slotsRes = await fetch(`http://localhost:5000/api/doctors/${doctor._id}/premium-slots?date=${dateStr}`);
     const slotsData = await slotsRes.json();
