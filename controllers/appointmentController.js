@@ -3,12 +3,14 @@ const checkDoctorSubscription = require("../utils/checkDoctorSubscription");
 const sendNotification = require("../services/notificationService");
 const { sendEmail, sendAppointmentEmail } = require("../services/emailService");
 const User = require("../models/User");
+const Doctor = require("../models/Doctor");
 const DailyCounter = require("../models/DailyCounter");
 const razorpay = require("../config/razorpay");
 
 const createNormalAppointment = async (req, res) => {
+  let counterIdToRollback = null;
   try {
-    const { doctorId } = req.body;
+    const { doctorId, date, slotDate, appointmentDate, slotTime, time } = req.body;
 
     const patientId = req.user._id;
     // Find doctor
@@ -36,48 +38,155 @@ const createNormalAppointment = async (req, res) => {
         message: "Doctor is currently on vacation",
       });
     }
-    const today = new Date();
 
-    const startOfDay = new Date(
-      today.getFullYear(),
-      today.getMonth(),
-      today.getDate(),
+    // 1. Date Validation
+    const targetDateStr = date || slotDate || appointmentDate;
+    const bookingDate = targetDateStr ? new Date(targetDateStr) : new Date();
+
+    if (isNaN(bookingDate.getTime())) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid booking date provided",
+      });
+    }
+
+    const todayMidnight = new Date();
+    todayMidnight.setHours(0, 0, 0, 0);
+
+    const bookingDateMidnight = new Date(
+      bookingDate.getFullYear(),
+      bookingDate.getMonth(),
+      bookingDate.getDate()
     );
 
-    const endOfDay = new Date(
-      today.getFullYear(),
-      today.getMonth(),
-      today.getDate() + 1,
-    );
+    if (bookingDateMidnight < todayMidnight) {
+      return res.status(400).json({
+        success: false,
+        message: "Past dates cannot be booked",
+      });
+    }
 
-    const counterId = `normal_${doctorId}_${startOfDay.getTime()}`;
-    const nextToken = await DailyCounter.incrementToken(counterId);
+    // 2. Doctor Configured Working Days Validation
+    const dayName = bookingDate.toLocaleDateString("en-US", { weekday: "long" });
+    const doctorWorkingDays =
+      doctor.workingDays && doctor.workingDays.length > 0
+        ? doctor.workingDays
+        : ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
-    console.log("Doctor Fee:", doctor.consultationFee);
-    console.log("Doctor:", doctor);
-const appointment = await Appointment.create({
-  patientId,
-  doctorId,
-  appointmentType: "normal",
-  amountPaid: doctor.consultationFee,
-  tokenNumber: nextToken,
-  appointmentDate: today,
-});
-console.log("Saved Appointment:", appointment);
+    if (!doctorWorkingDays.includes(dayName)) {
+      return res.status(400).json({
+        success: false,
+        message: `Doctor does not consult on ${dayName}`,
+      });
+    }
+
+    // 3. Clinic Operating Hours & Lunch Interval Validation
+    const clinicStart = doctor.clinicStartTime || "09:00";
+    const clinicEnd = doctor.clinicEndTime || "18:00";
+    const lunchStartStr = doctor.lunchStart || "13:00";
+    const lunchEndStr = doctor.lunchEnd || "14:00";
+    const slotDuration = doctor.slotDuration || 20;
+
+    const requestedSlotTime = slotTime || time;
+
+    if (requestedSlotTime) {
+      const timeRegex = /^([01]\d|2[0-3]):([0-5]\d)$/;
+      if (!timeRegex.test(requestedSlotTime)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid slot time format. Expected HH:mm (24-hour format)",
+        });
+      }
+
+      if (requestedSlotTime < clinicStart || requestedSlotTime >= clinicEnd) {
+        return res.status(400).json({
+          success: false,
+          message: `Requested slot time ${requestedSlotTime} is outside clinic operating hours (${clinicStart} - ${clinicEnd})`,
+        });
+      }
+
+      const [sH, sM] = requestedSlotTime.split(":").map(Number);
+      const slotMinutes = sH * 60 + sM;
+      const [lSH, lSM] = lunchStartStr.split(":").map(Number);
+      const [lEH, lEM] = lunchEndStr.split(":").map(Number);
+      const lunchStartMin = lSH * 60 + lSM;
+      const lunchEndMin = lEH * 60 + lEM;
+
+      if (slotMinutes >= lunchStartMin && slotMinutes < lunchEndMin) {
+        return res.status(400).json({
+          success: false,
+          message: `Doctor is unavailable during lunch break (${lunchStartStr} - ${lunchEndStr})`,
+        });
+      }
+
+      const [cSH, cSM] = clinicStart.split(":").map(Number);
+      const clinicStartMin = cSH * 60 + cSM;
+      if ((slotMinutes - clinicStartMin) % slotDuration !== 0) {
+        return res.status(400).json({
+          success: false,
+          message: `Requested slot time must align with the doctor's ${slotDuration}-minute slot interval starting from ${clinicStart}`,
+        });
+      }
+    }
+
+    // 4. Authoritative Fee Check
+    const authoritativeFee = doctor.consultationFee;
+    if (typeof authoritativeFee !== "number" || authoritativeFee <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Doctor consultation fee is not configured properly",
+      });
+    }
+
+    // 5. Daily Capacity Enforcement & Token Generation
+    const maxCapacity = doctor.maxNormalAppointments || 50;
+    const counterId = `normal_${doctorId}_${bookingDateMidnight.getTime()}`;
+    const nextToken = await DailyCounter.incrementAndCheckLimit(counterId, maxCapacity);
+
+    if (!nextToken) {
+      return res.status(400).json({
+        success: false,
+        message: "Maximum appointments reached for this day",
+      });
+    }
+
+    counterIdToRollback = counterId;
+
+    // 6. Appointment Persistence with rollback protection
+    const appointment = await Appointment.create({
+      patientId,
+      doctorId,
+      appointmentType: "normal",
+      amountDue: authoritativeFee,
+      amountPaid: 0,
+      tokenNumber: nextToken,
+      appointmentDate: bookingDate,
+      ...(requestedSlotTime ? { slotTime: requestedSlotTime } : {}),
+    });
+
+    counterIdToRollback = null; // Successfully persisted, no rollback needed
+
     res.status(201).json({
       success: true,
       tokenNumber: nextToken,
       appointment,
     });
   } catch (error) {
+    // Defect 4 Fix: Compensation rollback if appointment creation/persistence failed
+    if (counterIdToRollback) {
+      try {
+        await DailyCounter.decrementToken(counterIdToRollback);
+      } catch (rollbackErr) {
+        console.error("Failed to decrement counter during rollback:", rollbackErr);
+      }
+    }
+
     res.status(500).json({
       success: false,
       message: error.message,
     });
   }
 };
-
-const Doctor = require("../models/Doctor");
 
 
 const createPremiumAppointment = async (req, res) => {
@@ -140,14 +249,12 @@ const createPremiumAppointment = async (req, res) => {
     const workingDays =
       doctor.premiumWorkingDays && doctor.premiumWorkingDays.length > 0
         ? doctor.premiumWorkingDays
-        : doctor.workingDays && doctor.workingDays.length > 0
-        ? doctor.workingDays
-        : ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+        : [];
 
     if (!workingDays.includes(dayName)) {
       return res.status(400).json({
         success: false,
-        message: `Doctor does not work on ${dayName}`,
+        message: `Doctor does not provide Premium Consultation on ${dayName}`,
       });
     }
     // Lunch Break Validation
@@ -170,6 +277,17 @@ const createPremiumAppointment = async (req, res) => {
         message: "Doctor is unavailable during lunch break",
       });
     }
+
+    // Slot alignment validation with premiumSlotDuration
+    const premiumDuration = doctor.premiumSlotDuration || 20;
+    const [startH, startM] = start.split(":").map(Number);
+    const startMinutes = startH * 60 + startM;
+    if ((slotMinutes - startMinutes) % premiumDuration !== 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Slot time must align with the doctor's ${premiumDuration}-minute premium slot interval starting from ${start}`,
+      });
+    }
     if (bookingDate < today) {
       return res.status(400).json({
         success: false,
@@ -190,7 +308,8 @@ const createPremiumAppointment = async (req, res) => {
 
     // Check Daily Premium Limit atomically
     const counterId = `premium_${doctorId}_${new Date(slotDate).getTime()}`;
-    const limitReached = !(await DailyCounter.incrementAndCheckLimit(counterId, doctor.maxPremiumAppointments));
+    const maxPremiumLimit = doctor.maxPremiumAppointments || 20;
+    const limitReached = !(await DailyCounter.incrementAndCheckLimit(counterId, maxPremiumLimit));
 
     if (limitReached) {
       return res.status(400).json({
@@ -200,6 +319,14 @@ const createPremiumAppointment = async (req, res) => {
     }
 
     const bookingRef = "BK" + Date.now() + Math.floor(Math.random() * 1000);
+
+    const authoritativeFee = doctor.premiumFee;
+    if (typeof authoritativeFee !== "number" || authoritativeFee <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Doctor premium consultation fee is not configured properly",
+      });
+    }
 
     const appointment = await Appointment.findOneAndUpdate(
       {
@@ -219,7 +346,8 @@ const createPremiumAppointment = async (req, res) => {
           slotDate,
           slotTime,
           paymentStatus: "pending",
-          amountPaid: doctor.premiumFee,
+          amountDue: authoritativeFee,
+          amountPaid: 0,
           status: "pending_payment",
           bookingReference: bookingRef,
         },
@@ -228,6 +356,7 @@ const createPremiumAppointment = async (req, res) => {
     );
 
     if (appointment.bookingReference !== bookingRef) {
+      await DailyCounter.decrementToken(counterId);
       return res.status(400).json({
         success: false,
         message: "This slot is already booked",
@@ -250,6 +379,15 @@ const createPremiumAppointment = async (req, res) => {
       appointment,
     });
   } catch (error) {
+    if (counterId) {
+      await DailyCounter.decrementToken(counterId).catch(() => {});
+    }
+    if (error.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: "This premium slot has already been reserved",
+      });
+    }
     res.status(500).json({
       success: false,
       message: error.message,
@@ -323,12 +461,54 @@ const createPremiumAppointment = async (req, res) => {
       });
     }
 
+    // Check Working Day strictly against homeVisitWorkingDays
+    const dayName = bookingDate.toLocaleDateString("en-US", {
+      weekday: "long",
+    });
+
+    const homeVisitWorkingDays =
+      doctor.homeVisitWorkingDays && doctor.homeVisitWorkingDays.length > 0
+        ? doctor.homeVisitWorkingDays
+        : [];
+
+    if (!homeVisitWorkingDays.includes(dayName)) {
+      return res.status(400).json({
+        success: false,
+        message: `Doctor does not provide Home Visits on ${dayName}`,
+      });
+    }
+
+    // Home Visit Operating Hours and Slot Alignment
+    const start = doctor.homeVisitStartTime || "16:00";
+    const end = doctor.homeVisitEndTime || "19:00";
+    const duration = doctor.homeVisitSlotDuration || 30;
+
+    if (slotTime < start || slotTime >= end) {
+      return res.status(400).json({
+        success: false,
+        message: `Slot time ${slotTime} is outside doctor's home visit hours (${start} - ${end})`,
+      });
+    }
+
+    const [sH, sM] = slotTime.split(":").map(Number);
+    const slotMinutes = sH * 60 + sM;
+    const [startH, startM] = start.split(":").map(Number);
+    const startMinutes = startH * 60 + startM;
+
+    if ((slotMinutes - startMinutes) % duration !== 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Home visit slot time must align with ${duration}-minute intervals starting from ${start}`,
+      });
+    }
+
     // Check Daily Home Visit Limit atomically
     const selectedDate = new Date(visitDate);
     selectedDate.setHours(0, 0, 0, 0);
 
     const counterId = `home_${doctorId}_${selectedDate.getTime()}`;
-    const limitReached = !(await DailyCounter.incrementAndCheckLimit(counterId, doctor.maxHomeVisits));
+    const maxHomeVisits = doctor.maxHomeVisits || 5;
+    const limitReached = !(await DailyCounter.incrementAndCheckLimit(counterId, maxHomeVisits));
 
     if (limitReached) {
       return res.status(400).json({
@@ -338,6 +518,14 @@ const createPremiumAppointment = async (req, res) => {
     }
 
     const bookingRef = "BK" + Date.now() + Math.floor(Math.random() * 1000);
+
+    const authoritativeFee = doctor.homeVisitFee;
+    if (typeof authoritativeFee !== "number" || authoritativeFee <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Doctor home visit fee is not configured properly",
+      });
+    }
 
     const appointment = await Appointment.findOneAndUpdate(
       {
@@ -361,7 +549,8 @@ const createPremiumAppointment = async (req, res) => {
           homeVisitCity,
           homeVisitPincode,
           doctorResponse: "pending",
-          amountPaid: doctor.homeVisitFee,
+          amountDue: authoritativeFee,
+          amountPaid: 0,
           paymentStatus: "pending",
           status: "pending_payment",
           bookingReference: bookingRef,
@@ -371,6 +560,7 @@ const createPremiumAppointment = async (req, res) => {
     );
 
     if (appointment.bookingReference !== bookingRef) {
+      await DailyCounter.decrementToken(counterId);
       return res.status(400).json({
         success: false,
         message: "This slot is already booked",
@@ -402,6 +592,15 @@ await sendAppointmentEmail(
       appointment,
     });
   } catch (error) {
+    if (counterId) {
+      await DailyCounter.decrementToken(counterId).catch(() => {});
+    }
+    if (error.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: "This home visit slot has already been reserved",
+      });
+    }
     res.status(500).json({
       success: false,
       message: error.message,
@@ -431,6 +630,14 @@ const getDoctorAppointments = async (req, res) => {
 };
 const markAppointmentChecked = async (req, res) => {
   try {
+    const doctor = await Doctor.findOne({ userId: req.user._id });
+    if (!doctor) {
+      return res.status(403).json({
+        success: false,
+        message: "Only doctors can mark appointments as checked",
+      });
+    }
+
     const appointment = await Appointment.findById(req.params.id);
 
     if (!appointment) {
@@ -440,14 +647,56 @@ const markAppointmentChecked = async (req, res) => {
       });
     }
 
-    appointment.status = "checked";
+    // Doctor ownership check
+    if (appointment.doctorId.toString() !== doctor._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: "Not authorized to check in for another doctor's appointment",
+      });
+    }
 
-    await appointment.save();
+    // Defect 9 Fix: Preconditions requiring both confirmed status and paid payment status
+    if (appointment.paymentStatus !== "paid") {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot check in appointment: Payment has not been completed",
+      });
+    }
+
+    if (appointment.status !== "confirmed") {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid state transition: Cannot mark as checked from status '${appointment.status}'. Only confirmed appointments can be checked in.`,
+      });
+    }
+
+    // Defect 10 Fix: Atomic conditional state machine transition
+    const updatedAppointment = await Appointment.findOneAndUpdate(
+      {
+        _id: appointment._id,
+        doctorId: doctor._id,
+        status: "confirmed",
+        paymentStatus: "paid",
+      },
+      {
+        $set: {
+          status: "checked",
+        },
+      },
+      { new: true }
+    );
+
+    if (!updatedAppointment) {
+      return res.status(409).json({
+        success: false,
+        message: "Appointment state conflict: unable to complete check-in transition",
+      });
+    }
 
     res.status(200).json({
       success: true,
-      message: "Appointment checked",
-      appointment,
+      message: "Appointment checked successfully",
+      appointment: updatedAppointment,
     });
   } catch (error) {
     res.status(500).json({
@@ -528,28 +777,43 @@ const cancelAppointment = async (req, res) => {
     // Doctor Login Account
     const doctorUser = await User.findById(doctor.userId);
 
-    // Update Appointment
-    appointment.status = "cancelled_by_patient";
-    appointment.cancelReason = reason || "";
-    appointment.cancelledBy = "patient";
-    appointment.cancelledAt = new Date();
+    // Defect 10 Fix: Atomic conditional state machine transition for cancellation
+    const updatedAppointment = await Appointment.findOneAndUpdate(
+      {
+        _id: appointment._id,
+        patientId: req.user._id,
+        status: { $in: ["pending_payment", "confirmed", "rescheduled"] },
+      },
+      {
+        $set: {
+          status: "cancelled_by_patient",
+          cancelReason: reason || "",
+          cancelledBy: "patient",
+          cancelledAt: new Date(),
+        },
+      },
+      { new: true }
+    );
 
-    if (appointment.paymentStatus === "paid") {
-      try {
-        if (appointment.paymentId) {
-          const refund = await razorpay.payments.refund(appointment.paymentId, {
-            amount: appointment.amountPaid * 100
-          });
-          appointment.refundId = refund.id;
-        }
-        appointment.paymentStatus = "refund_pending"; 
-      } catch (refundError) {
-        console.error("Refund failed:", refundError);
-        appointment.paymentStatus = "refund_pending"; 
-      }
+    if (!updatedAppointment) {
+      return res.status(409).json({
+        success: false,
+        message: "Appointment state conflict: Cannot cancel an appointment that is already checked, completed, or cancelled",
+      });
     }
 
-    await appointment.save();
+    if (updatedAppointment.paymentStatus === "paid" && updatedAppointment.paymentId) {
+      try {
+        const refund = await razorpay.payments.refund(updatedAppointment.paymentId, {
+          amount: Math.round((updatedAppointment.amountPaid || updatedAppointment.amountDue) * 100),
+        });
+        updatedAppointment.refundId = refund.id;
+        updatedAppointment.paymentStatus = "refund_pending";
+        await updatedAppointment.save();
+      } catch (refundError) {
+        console.error("Refund failed:", refundError);
+      }
+    }
 
     // Send Notification
     if (doctorUser) {

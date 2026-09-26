@@ -23,14 +23,20 @@ async function testFullBookingFlow() {
     console.log("1. TESTING NORMAL APPOINTMENT BOOKING FLOW");
     console.log("==========================================");
 
-    // Step A: Book Normal Appointment
+    // Step A: Book Normal Appointment on Doctor's working day
+    let normalDate = new Date();
+    while (!doctor.workingDays.includes(normalDate.toLocaleDateString("en-US", { weekday: "long" }))) {
+      normalDate.setDate(normalDate.getDate() + 1);
+    }
+    const normalDateStr = normalDate.toISOString().split("T")[0];
+
     const normalBookRes = await fetch("http://localhost:5000/api/appointments/normal", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${patientToken}`,
       },
-      body: JSON.stringify({ doctorId: doctor._id.toString() }),
+      body: JSON.stringify({ doctorId: doctor._id.toString(), date: normalDateStr }),
     });
 
     const normalBookData = await normalBookRes.json();

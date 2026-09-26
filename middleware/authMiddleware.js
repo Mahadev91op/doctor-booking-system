@@ -11,12 +11,26 @@ const protect = async (req, res, next) => {
     try {
       token = req.headers.authorization.split(" ")[1];
 
+      if (!token || token === "null" || token === "undefined") {
+        return res.status(401).json({
+          success: false,
+          message: "No token provided",
+        });
+      }
+
       const decoded = jwt.verify(
         token,
         process.env.JWT_SECRET || "sehatraj_jwt_secret_dev_key_2026"
       );
 
       req.user = await User.findById(decoded.id).select("-password");
+
+      if (!req.user) {
+        return res.status(401).json({
+          success: false,
+          message: "Not authorized",
+        });
+      }
 
       return next();
     } catch (error) {
@@ -32,7 +46,15 @@ const protect = async (req, res, next) => {
     message: "No token provided",
   });
 };
+
 const doctorOnly = (req, res, next) => {
+  if (!req.user) {
+    return res.status(401).json({
+      success: false,
+      message: "Not authorized",
+    });
+  }
+
   if (req.user.role !== "doctor") {
     return res.status(403).json({
       success: false,
@@ -44,7 +66,14 @@ const doctorOnly = (req, res, next) => {
 };
 
 const patientOnly = (req, res, next) => {
-  if (req.user.role !== "patient") {
+  if (!req.user) {
+    return res.status(401).json({
+      success: false,
+      message: "Not authorized",
+    });
+  }
+
+  if (req.user.role !== "patient" && req.user.role !== "admin") {
     return res.status(403).json({
       success: false,
       message: "Access denied. Patient only.",
@@ -55,6 +84,13 @@ const patientOnly = (req, res, next) => {
 };
 
 const adminOnly = (req, res, next) => {
+  if (!req.user) {
+    return res.status(401).json({
+      success: false,
+      message: "Not authorized",
+    });
+  }
+
   if (req.user.role !== "admin") {
     return res.status(403).json({
       success: false,
@@ -71,3 +107,4 @@ module.exports = {
   patientOnly,
   adminOnly,
 };
+

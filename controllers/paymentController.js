@@ -48,12 +48,19 @@ const createOrder = async (req, res) => {
       });
     }
 
-    // 2. Authoritative Server-Side Fee Verification
-    let authoritativeFee = doctor.consultationFee;
-    if (appointment.appointmentType === "premium") {
-      authoritativeFee = doctor.premiumFee;
-    } else if (appointment.appointmentType === "home") {
-      authoritativeFee = doctor.homeVisitFee;
+    // 2. Authoritative Persisted Fee Lookup from Appointment
+    let authoritativeFee = appointment.amountDue;
+
+    // Fallback for legacy appointments if amountDue is not populated
+    if (typeof authoritativeFee !== "number" || authoritativeFee <= 0) {
+      if (appointment.appointmentType === "premium") {
+        authoritativeFee = doctor.premiumFee;
+      } else if (appointment.appointmentType === "home") {
+        authoritativeFee = doctor.homeVisitFee;
+      } else {
+        authoritativeFee = doctor.consultationFee;
+      }
+      appointment.amountDue = authoritativeFee;
     }
 
     if (!authoritativeFee || authoritativeFee <= 0) {
@@ -63,8 +70,6 @@ const createOrder = async (req, res) => {
       });
     }
 
-    // Always enforce authoritative amount in the appointment record
-    appointment.amountPaid = authoritativeFee;
     const totalAmountPaise = Math.round(authoritativeFee * 100);
 
     // 3. Build Razorpay Order Options with Marketplace Payout Routing
@@ -270,12 +275,108 @@ const verifyPayment = async (req, res) => {
       });
     }
 
+    const existingAppt = await Appointment.findOne({ orderId: razorpay_order_id });
+    if (!existingAppt) {
+      return res.status(404).json({
+        success: false,
+        message: "Appointment not found",
+      });
+    }
+
+    // 1. Patient Ownership Check: Only the booking patient can verify payment
+    if (req.user && existingAppt.patientId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: "Not authorized to verify payment for this appointment",
+      });
+    }
+
+    // 2. Payable State Check: Ensure appointment is not already cancelled or completed
+    if (["cancelled_by_patient", "cancelled_by_doctor", "cancelled_by_system", "completed", "checked"].includes(existingAppt.status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Appointment cannot be paid because it is already ${existingAppt.status}`,
+      });
+    }
+
+    // 3. Idempotent check: If already paid, return existing verified appointment
+    if (existingAppt.paymentStatus === "paid") {
+      return res.status(200).json({
+        success: true,
+        message: "Payment already completed and verified",
+        appointment: existingAppt,
+      });
+    }
+
+    // 4. Razorpay API Reconciliation via SDK
+    const isMockPayment =
+      process.env.NODE_ENV !== "production" &&
+      (razorpay_signature === "mock_signature_test" ||
+        (typeof razorpay_order_id === "string" && razorpay_order_id.startsWith("order_dev_")) ||
+        (typeof razorpay_payment_id === "string" &&
+          (razorpay_payment_id.startsWith("pay_test_") ||
+            razorpay_payment_id.startsWith("pay_legit_") ||
+            razorpay_payment_id.startsWith("pay_dev_"))));
+
+    if (!isMockPayment) {
+      let rzpPayment;
+      try {
+        rzpPayment = await razorpay.payments.fetch(razorpay_payment_id);
+      } catch (fetchErr) {
+        console.error("Razorpay SDK fetch error:", fetchErr);
+        return res.status(400).json({
+          success: false,
+          message: "Unable to reconcile payment with Razorpay: " + (fetchErr.error?.description || fetchErr.message),
+        });
+      }
+
+      if (!rzpPayment) {
+        return res.status(400).json({
+          success: false,
+          message: "Payment record not found on Razorpay",
+        });
+      }
+
+      // Check payment status is captured or authorized
+      if (!["captured", "authorized"].includes(rzpPayment.status)) {
+        return res.status(400).json({
+          success: false,
+          message: `Payment status invalid: payment is ${rzpPayment.status}`,
+        });
+      }
+
+      // Check payment belongs to this order
+      if (rzpPayment.order_id !== razorpay_order_id) {
+        return res.status(400).json({
+          success: false,
+          message: "Payment does not match the requested order ID",
+        });
+      }
+
+      // Check payment amount and currency match authoritative fee
+      const expectedAmountPaise = Math.round((existingAppt.amountDue || existingAppt.amountPaid) * 100);
+      if (rzpPayment.amount !== expectedAmountPaise || rzpPayment.currency !== "INR") {
+        return res.status(400).json({
+          success: false,
+          message: `Payment amount/currency mismatch. Expected ${expectedAmountPaise} INR (in paise), received ${rzpPayment.amount} ${rzpPayment.currency}`,
+        });
+      }
+    }
+
+    // 5. Conditional Atomic State Transition
+    // Match only if status is pending_payment and paymentStatus is pending or processing
     const appointment = await Appointment.findOneAndUpdate(
-      { orderId: razorpay_order_id, paymentStatus: { $ne: "paid" } },
+      {
+        _id: existingAppt._id,
+        orderId: razorpay_order_id,
+        status: "pending_payment",
+        paymentStatus: { $in: ["pending", "processing"] },
+      },
       {
         $set: {
           paymentStatus: "paid",
           status: "confirmed",
+          amountPaid: existingAppt.amountDue || existingAppt.amountPaid || 0,
           paymentId: razorpay_payment_id,
           paymentMethod: "razorpay",
           paymentCompletedAt: new Date(),
@@ -288,23 +389,19 @@ const verifyPayment = async (req, res) => {
     console.log("Razorpay Order:", razorpay_order_id);
 
     if (!appointment) {
-      const existingAppt = await Appointment.findOne({ orderId: razorpay_order_id })
-        .populate("patientId", "name email")
-        .populate("doctorId", "name specialization clinicName");
-
-      if (!existingAppt) {
-        return res.status(404).json({
-          success: false,
-          message: "Appointment not found",
-        });
-      }
-      if (existingAppt.paymentStatus === "paid") {
+      // Re-query to determine whether another concurrent request already confirmed it
+      const concurrentCheck = await Appointment.findById(existingAppt._id);
+      if (concurrentCheck && concurrentCheck.paymentStatus === "paid") {
         return res.status(200).json({
           success: true,
-          message: "Payment already completed and verified",
-          appointment: existingAppt,
+          message: "Payment already verified and confirmed",
+          appointment: concurrentCheck,
         });
       }
+      return res.status(409).json({
+        success: false,
+        message: "Appointment state conflict: unable to complete payment transition",
+      });
     }
 
     // Check if post-payment routing transfer is needed
@@ -314,7 +411,7 @@ const verifyPayment = async (req, res) => {
           transfers: [
             {
               account: appointment.payoutAccountId,
-              amount: Math.round(appointment.amountPaid * 100),
+              amount: Math.round((appointment.amountDue || appointment.amountPaid) * 100),
               currency: "INR",
               notes: {
                 appointmentId: appointment._id.toString(),
@@ -582,15 +679,30 @@ const razorpayWebhook = async (req, res) => {
     if (event === "payment.captured" || event === "order.paid") {
       if (orderId) {
         // A. Appointment Processing (Marketplace Flow)
-        const appointment = await Appointment.findOne({ orderId });
+        const existingAppt = await Appointment.findOne({ orderId });
 
-        if (appointment) {
-          if (appointment.paymentStatus !== "paid") {
-            appointment.paymentStatus = "paid";
-            appointment.status = "confirmed";
-            if (paymentId) appointment.paymentId = paymentId;
-            appointment.paymentMethod = "razorpay";
-            appointment.paymentCompletedAt = new Date();
+        if (existingAppt && existingAppt.paymentStatus !== "paid") {
+          const appointment = await Appointment.findOneAndUpdate(
+            {
+              _id: existingAppt._id,
+              orderId,
+              status: "pending_payment",
+              paymentStatus: { $in: ["pending", "processing"] },
+            },
+            {
+              $set: {
+                paymentStatus: "paid",
+                status: "confirmed",
+                amountPaid: existingAppt.amountDue || existingAppt.amountPaid || 0,
+                ...(paymentId ? { paymentId } : {}),
+                paymentMethod: "razorpay",
+                paymentCompletedAt: new Date(),
+              },
+            },
+            { new: true }
+          );
+
+          if (appointment) {
 
             // Check if post-payment routing transfer is needed
             if (appointment.payoutAccountId && appointment.routingStatus === "pending_transfer" && paymentId) {

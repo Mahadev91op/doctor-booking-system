@@ -23,15 +23,15 @@ dailyCounterSchema.statics.incrementAndCheckLimit = async function (
     { $inc: { count: 1 } },
     { new: true }
   );
-  if (counter) return true;
+  if (counter) return counter.count;
 
   const existing = await this.findById(counterId);
   if (existing && existing.count >= limit) return false;
 
   if (!existing) {
     try {
-      await this.create({ _id: counterId, count: 1 });
-      return true;
+      const created = await this.create({ _id: counterId, count: 1 });
+      return created.count;
     } catch (err) {
       if (err.code === 11000) {
         const retry = await this.findOneAndUpdate(
@@ -39,12 +39,25 @@ dailyCounterSchema.statics.incrementAndCheckLimit = async function (
           { $inc: { count: 1 } },
           { new: true }
         );
-        return !!retry;
+        return retry ? retry.count : false;
       }
       throw err;
     }
   }
   return false;
+};
+
+// Compensation rollback logic: Decrements counter when appointment persistence fails
+dailyCounterSchema.statics.decrementToken = async function (counterId) {
+  const counter = await this.findByIdAndUpdate(
+    counterId,
+    { $inc: { count: -1 } },
+    { new: true }
+  );
+  if (counter && counter.count < 0) {
+    await this.findByIdAndUpdate(counterId, { $set: { count: 0 } });
+  }
+  return counter ? counter.count : 0;
 };
 
 module.exports = mongoose.model("DailyCounter", dailyCounterSchema);

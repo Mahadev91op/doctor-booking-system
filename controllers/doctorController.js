@@ -198,7 +198,7 @@ const getPremiumSlots = async (req, res) => {
 
     const start = doctor.premiumStartTime || doctor.clinicStartTime || "09:00";
     const end = doctor.premiumEndTime || doctor.clinicEndTime || "18:00";
-    const duration = doctor.premiumSlotDuration || doctor.slotDuration || 20;
+    const duration = doctor.premiumSlotDuration || 20;
 
     if (!duration || duration <= 0) {
       return res.status(400).json({
@@ -263,9 +263,7 @@ const getPremiumSlots = async (req, res) => {
     const workingDays =
       doctor.premiumWorkingDays && doctor.premiumWorkingDays.length > 0
         ? doctor.premiumWorkingDays
-        : doctor.workingDays && doctor.workingDays.length > 0
-        ? doctor.workingDays
-        : ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+        : [];
 
     if (!workingDays.includes(dayName)) {
       return res.status(200).json({
@@ -288,6 +286,18 @@ const getPremiumSlots = async (req, res) => {
     });
 
     bookedSlots = appointments.map((a) => a.slotTime);
+
+    // Enforce max premium appointments cap
+    const maxPremiumLimit = doctor.maxPremiumAppointments || 20;
+    if (appointments.length >= maxPremiumLimit) {
+      return res.status(200).json({
+        success: true,
+        message: "Maximum premium appointment capacity reached for this day",
+        totalSlots: slots.length,
+        bookedSlots: slots,
+        availableSlots: [],
+      });
+    }
 
     // Remove booked slots
     const availableSlots = slots.filter((slot) => !bookedSlots.includes(slot));
@@ -344,17 +354,18 @@ const getHomeVisitSlots = async (req, res) => {
       });
     }
 
-    // Check Working Day
-    const bookingDate = new Date(selectedDate);
+    const homeVisitWorkingDays =
+      doctor.homeVisitWorkingDays && doctor.homeVisitWorkingDays.length > 0
+        ? doctor.homeVisitWorkingDays
+        : [];
 
-    const dayName = bookingDate.toLocaleDateString("en-US", {
-      weekday: "long",
-    });
-
-    if (!doctor.homeVisitWorkingDays.includes(dayName)) {
-      return res.status(400).json({
-        success: false,
+    if (!homeVisitWorkingDays.includes(dayName)) {
+      return res.status(200).json({
+        success: true,
         message: `Doctor does not provide Home Visits on ${dayName}`,
+        totalSlots: 0,
+        bookedSlots: [],
+        availableSlots: [],
       });
     }
 
@@ -422,6 +433,19 @@ const getHomeVisitSlots = async (req, res) => {
     });
 
     const bookedSlots = appointments.map((a) => a.slotTime);
+
+    // Enforce max home visits cap
+    const maxHomeLimit = doctor.maxHomeVisits || 5;
+    if (appointments.length >= maxHomeLimit) {
+      return res.status(200).json({
+        success: true,
+        date: selectedDate,
+        message: "Maximum home visits reached for this day",
+        totalSlots: slots.length,
+        bookedSlots: slots,
+        availableSlots: [],
+      });
+    }
 
     const availableSlots = slots.filter((slot) => !bookedSlots.includes(slot));
 
@@ -984,23 +1008,117 @@ const updateHomeVisitStatus = async (req, res) => {
       });
     }
 
+    if (!["accept", "reject"].includes(action)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid action. Supported actions: 'accept', 'reject'",
+      });
+    }
+
     if (action === "accept") {
-      appointment.doctorResponse = "accepted";
-      appointment.status = "confirmed";
+      // Precondition (Defect 9): Precondition requiring both confirmed status and paid payment status
+      if (appointment.paymentStatus !== "paid") {
+        return res.status(400).json({
+          success: false,
+          message: "Cannot accept home visit: Payment has not been completed",
+        });
+      }
+
+      if (appointment.status !== "confirmed" && appointment.status !== "pending_payment") {
+        return res.status(400).json({
+          success: false,
+          message: `Cannot accept home visit: Appointment is currently in '${appointment.status}' state`,
+        });
+      }
+
+      // Atomic conditional update (Defect 10)
+      const updated = await Appointment.findOneAndUpdate(
+        {
+          _id: appointment._id,
+          doctorId: doctor._id,
+          paymentStatus: "paid",
+          status: { $in: ["confirmed", "pending_payment"] },
+          doctorResponse: "pending",
+        },
+        {
+          $set: {
+            doctorResponse: "accepted",
+            status: "confirmed",
+          },
+        },
+        { new: true }
+      );
+
+      if (!updated) {
+        return res.status(409).json({
+          success: false,
+          message: "Home visit response conflict: Appointment is no longer in a pending response state",
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: "Home visit accepted successfully",
+        appointment: updated,
+      });
     }
 
     if (action === "reject") {
-      appointment.doctorResponse = "rejected";
-      appointment.status = "cancelled";
+      // Defect 8 Fix: Use valid schema enum "cancelled_by_doctor" instead of invalid "cancelled"
+      const updated = await Appointment.findOneAndUpdate(
+        {
+          _id: appointment._id,
+          doctorId: doctor._id,
+          status: {
+            $nin: [
+              "completed",
+              "checked",
+              "cancelled_by_doctor",
+              "cancelled_by_patient",
+              "cancelled_by_system",
+            ],
+          },
+          doctorResponse: "pending",
+        },
+        {
+          $set: {
+            doctorResponse: "rejected",
+            status: "cancelled_by_doctor",
+            cancelledBy: "doctor",
+            cancelledAt: new Date(),
+          },
+        },
+        { new: true }
+      );
+
+      if (!updated) {
+        return res.status(409).json({
+          success: false,
+          message: "Home visit response conflict: Cannot reject completed or already cancelled visit",
+        });
+      }
+
+      // If already paid, trigger refund flow
+      if (updated.paymentStatus === "paid" && updated.paymentId) {
+        try {
+          const razorpay = require("../config/razorpay");
+          const refund = await razorpay.payments.refund(updated.paymentId, {
+            amount: Math.round((updated.amountPaid || updated.amountDue) * 100),
+          });
+          updated.refundId = refund.id;
+          updated.paymentStatus = "refund_pending";
+          await updated.save();
+        } catch (refundErr) {
+          console.error("Home visit refund error on reject:", refundErr.message);
+        }
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: "Home visit rejected successfully",
+        appointment: updated,
+      });
     }
-
-    await appointment.save();
-
-    res.status(200).json({
-      success: true,
-      message: `Home visit ${action}ed successfully`,
-      appointment,
-    });
   } catch (error) {
     res.status(500).json({
       success: false,

@@ -53,6 +53,7 @@ const appointmentSchema = new mongoose.Schema(
         "completed",
         "cancelled_by_patient",
         "cancelled_by_doctor",
+        "cancelled_by_system",
         "missed",
         "rescheduled",
       ],
@@ -72,6 +73,14 @@ const appointmentSchema = new mongoose.Schema(
         "refunded",
       ],
       default: "pending",
+    },
+
+    // Authoritative persisted fee / amount due
+    amountDue: {
+      type: Number,
+      required: true,
+      default: 0,
+      min: 0,
     },
 
     amountPaid: {
@@ -135,7 +144,7 @@ const appointmentSchema = new mongoose.Schema(
 
     cancelledBy: {
       type: String,
-      enum: ["patient", "doctor", "admin", ""],
+      enum: ["patient", "doctor", "admin", "system", ""],
       default: "",
     },
     expiresAt: {
@@ -203,5 +212,10 @@ const appointmentSchema = new mongoose.Schema(
     timestamps: true,
   },
 );
+
+// Virtual property so appointment.fee consistently resolves to amountDue
+appointmentSchema.virtual("fee").get(function () {
+  return this.amountDue;
+});
 
 module.exports = mongoose.model("Appointment", appointmentSchema);

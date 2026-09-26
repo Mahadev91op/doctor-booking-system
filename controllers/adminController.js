@@ -14,11 +14,11 @@ const getAdminDashboard = async (req, res) => {
     const totalAppointments = await Appointment.countDocuments();
 
     const pendingDoctors = await Doctor.countDocuments({
-      subscriptionStatus: "inactive",
+      subscriptionStatus: { $in: ["inactive", "pending"] },
     });
 
     const activeDoctors = await Doctor.countDocuments({
-      subscriptionStatus: "active",
+      subscriptionStatus: { $in: ["active", "trial"] },
     });
 
     const totalRevenue = await Appointment.aggregate([
@@ -31,15 +31,24 @@ const getAdminDashboard = async (req, res) => {
         $group: {
           _id: null,
           revenue: {
-            $sum: "$amountPaid",
+            $sum: { $ifNull: ["$amountPaid", "$amountDue"] },
           },
         },
       },
     ]);
 
+    const recentAppointments = await Appointment.find()
+      .populate("patientId", "name mobile email")
+      .populate("doctorId", "name specialization clinicName")
+      .sort({ createdAt: -1 })
+      .limit(6);
+
+    const recentDoctors = await Doctor.find()
+      .sort({ createdAt: -1 })
+      .limit(6);
+
     res.status(200).json({
       success: true,
-
       statistics: {
         totalDoctors,
         activeDoctors,
@@ -48,6 +57,8 @@ const getAdminDashboard = async (req, res) => {
         totalAppointments,
         totalRevenue: totalRevenue.length > 0 ? totalRevenue[0].revenue : 0,
       },
+      recentAppointments: recentAppointments || [],
+      recentDoctors: recentDoctors || [],
     });
   } catch (error) {
     res.status(500).json({
